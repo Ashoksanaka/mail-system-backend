@@ -1,0 +1,92 @@
+# ──────────────────────────────────────────────────────────────
+# Docker Compose — Bulk Email Dispatch Platform (Backend)
+# Services: db, redis, backend, celery
+# ──────────────────────────────────────────────────────────────
+
+services:
+  # ── 1. PostgreSQL Database ─────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mail_system_net
+
+  # ── 2. Redis (Celery Broker + Channel Layer) ───────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+    networks:
+      - mail_system_net
+
+  # ── 3. Django Backend (Daphne ASGI Server) ─────────────────
+  backend:
+    build: .
+    restart: unless-stopped
+    mem_limit: 512m
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: /app/entrypoint.sh
+    networks:
+      - mail_system_net
+
+  # ── 4. Celery Worker ───────────────────────────────────────
+  celery:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - redis
+    env_file: .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - .:/app
+    command: celery -A celery_app worker --loglevel=info --concurrency=4
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A celery_app inspect ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - mail_system_net
+
+# ── Named Volumes ────────────────────────────────────────────
+volumes:
+  postgres_data:
+
+# ── Networks ─────────────────────────────────────────────────
+networks:
+  mail_system_net:
+    name: mail_system_net
+    external: true
