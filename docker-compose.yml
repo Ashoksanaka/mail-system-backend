@@ -51,15 +51,33 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - .:/app
     command: /app/entrypoint.sh
     networks:
       - mail_system_net
 
-  # ── 4. Celery Worker ───────────────────────────────────────
+  # ── 4. Caddy (Reverse Proxy & Auto-HTTPS) ──────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - mail_system_net
+    depends_on:
+      - backend
+
+  # ── 5. Celery Worker ───────────────────────────────────────
   celery:
     build: .
     restart: unless-stopped
@@ -84,6 +102,8 @@ services:
 # ── Named Volumes ────────────────────────────────────────────
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
 
 # ── Networks ─────────────────────────────────────────────────
 networks:
