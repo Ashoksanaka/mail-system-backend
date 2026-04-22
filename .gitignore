@@ -28,10 +28,6 @@ yarn-error.log*
 frontend/dist/
 frontend/build/
 
-# ─── Environment ─────────────────────────────────────
-.env
-!.env.example
-
 # ─── Docker ──────────────────────────────────────────
 .dockerignore
 
