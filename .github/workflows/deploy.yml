@@ -26,9 +26,14 @@ jobs:
             git fetch origin
             git reset --hard origin/main
             
+            # If .env does not exist, create it from .env.example to prevent docker-compose errors
+            if [ ! -f .env ]; then
+              cp .env.example .env
+            fi
+            
             # Restart the Docker containers and rebuild the images
-            docker-compose down
-            docker-compose up --build -d
+            sudo docker-compose down
+            sudo docker-compose up --build -d
             
             # Clean up dangling images to save disk space
-            docker system prune -f
+            sudo docker system prune -f
