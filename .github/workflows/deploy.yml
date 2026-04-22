@@ -31,6 +31,9 @@ jobs:
               cp .env.example .env
             fi
             
+            # Ensure the external docker network exists before starting containers
+            sudo docker network inspect mail_system_net >/dev/null 2>&1 || sudo docker network create mail_system_net
+            
             # Restart the Docker containers and rebuild the images
             sudo docker-compose down
             sudo docker-compose up --build -d
