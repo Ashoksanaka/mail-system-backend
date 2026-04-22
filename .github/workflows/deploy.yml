@@ -1,0 +1,34 @@
+name: Deploy Backend to AWS VM
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
+
+jobs:
+  deploy:
+    name: Deploy to EC2/VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Navigate to the project directory on the VM
+            cd ${{ secrets.APP_DIR }}
+            
+            # Pull the latest changes from the main branch
+            git fetch origin
+            git reset --hard origin/main
+            
+            # Restart the Docker containers and rebuild the images
+            docker-compose down
+            docker-compose up --build -d
+            
+            # Clean up dangling images to save disk space
+            docker system prune -f
