@@ -105,12 +105,24 @@ jobs:
               exit 1
             fi
 
+            # Resolve the Compose command: prefer the v2 plugin (`docker compose`),
+            # fall back to the legacy `docker-compose` binary if present.
+            if sudo docker compose version >/dev/null 2>&1; then
+              COMPOSE="sudo docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              COMPOSE="sudo docker-compose"
+            else
+              echo "ERROR: Neither 'docker compose' plugin nor 'docker-compose' is installed on the VM."
+              exit 1
+            fi
+            echo "Using Compose command: ${COMPOSE}"
+
             # Ensure the external docker network exists before starting containers
             sudo docker network inspect mail_system_net >/dev/null 2>&1 || sudo docker network create mail_system_net
 
             # Restart the Docker containers and rebuild the images
-            sudo docker-compose down
-            sudo docker-compose up --build -d
+            ${COMPOSE} down
+            ${COMPOSE} up --build -d
 
             # Clean up dangling images to save disk space
             sudo docker system prune -f
@@ -133,6 +145,6 @@ jobs:
               sleep 5
             done
             echo "ERROR: HTTPS health check failed for https://${DOMAIN}/api/health/"
-            sudo docker-compose ps
-            sudo docker-compose logs --tail=80 caddy backend || true
+            ${COMPOSE} ps
+            ${COMPOSE} logs --tail=80 caddy backend || true
             exit 1
