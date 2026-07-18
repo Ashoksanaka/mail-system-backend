@@ -2,9 +2,9 @@
 # Templates Manager — Serializers
 # DRF serializers for email template CRUD operations
 # ──────────────────────────────────────────────────────────────
-import re
-
 from rest_framework import serializers
+
+from apps.core.utils import PLACEHOLDER_PATTERN, extract_placeholders
 
 from .models import EmailTemplate
 
@@ -32,10 +32,21 @@ class EmailTemplateSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def validate_name(self, value):
-        """Name must be non-empty and stripped of whitespace."""
+        """Name must be non-empty, unique per owner."""
         stripped = value.strip()
         if not stripped:
             raise serializers.ValidationError("Template name cannot be empty.")
+
+        request = self.context.get("request")
+        owner = getattr(request, "user", None) if request else None
+        if owner and owner.is_authenticated:
+            qs = EmailTemplate.objects.filter(owner=owner, name=stripped)
+            if self.instance is not None:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    "You already have a template with this name."
+                )
         return stripped
 
     def validate_subject(self, value):
@@ -46,10 +57,11 @@ class EmailTemplateSerializer(serializers.ModelSerializer):
         return stripped
 
     def validate_body(self, value):
-        """Body must contain at least one {{placeholder}}."""
-        if not re.search(r"\{\{\s*\w+\s*\}\}", value):
+        """Body must contain at least one underscore-style {{placeholder}}."""
+        if not PLACEHOLDER_PATTERN.search(value) or not extract_placeholders(value):
             raise serializers.ValidationError(
-                "Template body must contain at least one {{placeholder}}."
+                "Template body must contain at least one {{placeholder}} "
+                "(use underscore-separated names like {{Your_Contact_Info}})."
             )
         return value
 

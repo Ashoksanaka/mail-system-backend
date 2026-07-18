@@ -7,16 +7,18 @@ import io
 import uuid
 
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.credentials import user_has_configured_smtp
 from apps.core.utils import extract_placeholders, generate_csv_content
 from apps.templates_manager.models import EmailTemplate
 
 from .models import DispatchJob
 from .serializers import DispatchJobSerializer, DispatchLogSerializer
-from .tasks import send_bulk_emails
+from .tasks import cleanup_job_attachments, send_bulk_emails
 
 
 class GenerateCSVView(APIView):
@@ -42,21 +44,17 @@ class GenerateCSVView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Fetch the email template
         try:
-            template = EmailTemplate.objects.get(pk=template_id)
+            template = EmailTemplate.objects.get(pk=template_id, owner=request.user)
         except EmailTemplate.DoesNotExist:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Extract placeholders and generate CSV content
         placeholders = extract_placeholders(f"{template.subject} {template.body}")
         csv_content = generate_csv_content(placeholders)
 
-        # Build file response
-        # Sanitize template name for filename
         safe_name = template.name.replace(" ", "_").lower()
         filename = f"recipients_{safe_name}.csv"
 
@@ -77,7 +75,6 @@ class UploadCSVView(APIView):
         template_id = request.data.get("template_id")
         csv_file = request.FILES.get("csv_file")
 
-        # ── Input validation ─────────────────────────────────
         if not template_id:
             return Response(
                 {"error": "template_id is required."},
@@ -96,25 +93,23 @@ class UploadCSVView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Fetch template
         try:
-            template = EmailTemplate.objects.get(pk=template_id)
+            template = EmailTemplate.objects.get(pk=template_id, owner=request.user)
         except EmailTemplate.DoesNotExist:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # ── Parse and validate CSV ───────────────────────────
-        expected_placeholders = extract_placeholders(f"{template.subject} {template.body}")
+        expected_placeholders = extract_placeholders(
+            f"{template.subject} {template.body}"
+        )
         validation_errors = []
 
         try:
-            # Read the CSV file content
             decoded = csv_file.read().decode("utf-8-sig")
             reader = csv.DictReader(io.StringIO(decoded))
 
-            # Check headers exist
             if reader.fieldnames is None:
                 return Response(
                     {"error": "CSV file is empty or has no headers."},
@@ -123,7 +118,6 @@ class UploadCSVView(APIView):
 
             headers = [h.strip() for h in reader.fieldnames]
 
-            # Validate required columns
             if "receiver_email_ID" not in headers:
                 validation_errors.append(
                     "Missing required column: 'receiver_email_ID'"
@@ -133,7 +127,6 @@ class UploadCSVView(APIView):
                     "Missing required column: 'receiver_name'"
                 )
 
-            # Validate placeholder columns
             for placeholder in expected_placeholders:
                 if placeholder not in headers:
                     validation_errors.append(
@@ -146,14 +139,11 @@ class UploadCSVView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Read all rows
             rows = []
             for row in reader:
-                # Strip whitespace from keys
                 cleaned = {k.strip(): v for k, v in row.items()}
                 rows.append(cleaned)
 
-            # Validate at least 1 data row
             if len(rows) == 0:
                 return Response(
                     {
@@ -163,9 +153,8 @@ class UploadCSVView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Validate receiver_email_ID values are non-empty
             empty_email_rows = []
-            for i, row in enumerate(rows, start=2):  # start=2 (header is row 1)
+            for i, row in enumerate(rows, start=2):
                 email = row.get("receiver_email_ID", "").strip()
                 if not email:
                     empty_email_rows.append(f"Row {i}")
@@ -181,7 +170,6 @@ class UploadCSVView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # ── Success response ─────────────────────────────
             return Response(
                 {
                     "valid": True,
@@ -217,7 +205,6 @@ class StartDispatchView(APIView):
         template_id = request.data.get("template_id")
         csv_file = request.FILES.get("csv_file")
 
-        # ── Input validation (cheap checks first) ───────────
         if not template_id:
             return Response(
                 {"error": "template_id is required."},
@@ -236,23 +223,53 @@ class StartDispatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── Rate limiting / Active Job Check (DB query) ──────
-        if DispatchJob.objects.filter(status=DispatchJob.Status.IN_PROGRESS).exists():
+        if DispatchJob.objects.filter(
+            owner=request.user,
+            status__in=[
+                DispatchJob.Status.PENDING,
+                DispatchJob.Status.IN_PROGRESS,
+            ],
+        ).exists():
+            existing = (
+                DispatchJob.objects.filter(
+                    owner=request.user,
+                    status__in=[
+                        DispatchJob.Status.PENDING,
+                        DispatchJob.Status.IN_PROGRESS,
+                    ],
+                )
+                .order_by("-created_at")
+                .first()
+            )
             return Response(
-                {"error": "A dispatch job is already in progress. Please wait."},
+                {
+                    "error": "A dispatch job is already in progress. Please wait.",
+                    "job_id": str(existing.id),
+                    "total_recipients": existing.total_recipients,
+                    "status": existing.status,
+                },
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        # Fetch template
+        if not user_has_configured_smtp(request.user):
+            return Response(
+                {
+                    "error": (
+                        "Gmail app password is not configured. "
+                        "Add it under Settings before starting a dispatch."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            template = EmailTemplate.objects.get(pk=template_id)
+            template = EmailTemplate.objects.get(pk=template_id, owner=request.user)
         except EmailTemplate.DoesNotExist:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # ── Parse CSV ────────────────────────────────────────
         try:
             decoded = csv_file.read().decode("utf-8-sig")
             reader = csv.DictReader(io.StringIO(decoded))
@@ -274,28 +291,25 @@ class StartDispatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── Create DispatchJob ───────────────────────────────
         job = DispatchJob.objects.create(
+            owner=request.user,
             template=template,
             total_recipients=len(rows),
             status=DispatchJob.Status.PENDING,
         )
 
-        # ── Handle Attachments ───────────────────────────────
         from django.core.files.storage import default_storage
+
         file_mapping = {}
 
         if template.has_attachments:
             job_dir = f"dispatch_attachments/{job.id}"
-            
+
             for key, file in request.FILES.items():
-                # Skip the primary csv_file
                 if key == "csv_file":
                     continue
-                
-                # Check if it matches our attachment keys format
+
                 if key.startswith("global_") or key.startswith("row_"):
-                    # Save the file temporarily
                     file_path = default_storage.save(f"{job_dir}/{file.name}", file)
                     file_mapping[key] = {
                         "path": file_path,
@@ -303,13 +317,25 @@ class StartDispatchView(APIView):
                         "content_type": file.content_type,
                     }
 
-        # ── Trigger Celery task ──────────────────────────────
-        send_bulk_emails.delay(
-            str(job.id),
-            str(template.id),
-            rows,
-            file_mapping,
-        )
+        try:
+            send_bulk_emails.delay(
+                str(job.id),
+                str(template.id),
+                rows,
+                file_mapping,
+            )
+        except Exception:
+            cleanup_job_attachments(str(job.id))
+            job.status = DispatchJob.Status.FAILED
+            job.error_message = "Failed to queue dispatch task."
+            job.completed_at = timezone.now()
+            job.save(
+                update_fields=["status", "error_message", "completed_at"]
+            )
+            return Response(
+                {"error": "Failed to queue dispatch task. Please try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         return Response(
             {
@@ -330,7 +356,9 @@ class DispatchJobDetailView(APIView):
     def get(self, request, job_id):
         """Retrieve dispatch job status and logs."""
         try:
-            job = DispatchJob.objects.select_related('template').get(pk=job_id)
+            job = DispatchJob.objects.select_related("template").get(
+                pk=job_id, owner=request.user
+            )
         except DispatchJob.DoesNotExist:
             return Response(
                 {"error": "Dispatch job not found."},

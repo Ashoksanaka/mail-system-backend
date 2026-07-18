@@ -1,0 +1,7 @@
+# Generated / vendor assets
+staticfiles/
+
+# Virtual environments
+env/
+.venv/
+venv/

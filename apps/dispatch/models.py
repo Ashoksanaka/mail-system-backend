@@ -4,6 +4,7 @@
 # ──────────────────────────────────────────────────────────────
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 from apps.templates_manager.models import EmailTemplate
@@ -25,6 +26,12 @@ class DispatchJob(models.Model):
         primary_key=True,
         default=uuid.uuid4,
         editable=False,
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dispatch_jobs",
+        help_text="Clerk-authenticated user who owns this job",
     )
     template = models.ForeignKey(
         EmailTemplate,
@@ -52,6 +59,11 @@ class DispatchJob(models.Model):
         default=Status.PENDING,
         db_index=True,
     )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Top-level failure reason when the job fails before/during send",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
@@ -59,6 +71,9 @@ class DispatchJob(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Dispatch Job"
         verbose_name_plural = "Dispatch Jobs"
+        indexes = [
+            models.Index(fields=["owner", "status"]),
+        ]
 
     def __str__(self):
         return f"Job {self.id} — {self.status} ({self.sent_count}/{self.total_recipients})"

@@ -10,6 +10,7 @@ from .models import DispatchJob, DispatchLog
 class DispatchJobAdmin(admin.ModelAdmin):
     list_display = [
         "id",
+        "owner",
         "template",
         "status",
         "total_recipients",
@@ -17,8 +18,8 @@ class DispatchJobAdmin(admin.ModelAdmin):
         "failed_count",
         "created_at",
     ]
-    list_filter = ["status"]
-    search_fields = ["id"]
+    list_filter = ["status", "owner"]
+    search_fields = ["id", "owner__username", "owner__email"]
     readonly_fields = ["id", "created_at", "completed_at"]
 
 

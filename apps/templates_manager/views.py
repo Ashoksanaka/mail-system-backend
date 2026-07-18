@@ -14,21 +14,21 @@ from .serializers import EmailTemplateListSerializer, EmailTemplateSerializer
 
 class EmailTemplateListCreateView(APIView):
     """
-    GET  /api/templates/       → List all templates (lightweight)
-    POST /api/templates/       → Create a new template
+    GET  /api/templates/       → List the caller's templates
+    POST /api/templates/       → Create a new template for the caller
     """
 
     def get(self, request):
-        """Return list of all templates ordered by -created_at."""
-        templates = EmailTemplate.objects.all()
+        templates = EmailTemplate.objects.filter(owner=request.user)
         serializer = EmailTemplateListSerializer(templates, many=True)
         return Response(serializer.data)
 
     def post(self, request):
-        """Create a new email template."""
-        serializer = EmailTemplateSerializer(data=request.data)
+        serializer = EmailTemplateSerializer(
+            data=request.data, context={"request": request}
+        )
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(owner=request.user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -40,47 +40,45 @@ class EmailTemplateDetailView(APIView):
     DELETE /api/templates/:id/    → Delete template
     """
 
-    def _get_template(self, pk):
-        """Fetch template by primary key or return None."""
+    def _get_template(self, request, pk):
         try:
-            return EmailTemplate.objects.get(pk=pk)
+            return EmailTemplate.objects.get(pk=pk, owner=request.user)
         except EmailTemplate.DoesNotExist:
             return None
 
     def get(self, request, pk):
-        """Return full template details."""
-        template = self._get_template(pk)
+        template = self._get_template(request, pk)
         if template is None:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = EmailTemplateSerializer(template)
+        serializer = EmailTemplateSerializer(template, context={"request": request})
         return Response(serializer.data)
 
     def put(self, request, pk):
-        """Update an existing template (all fields)."""
-        template = self._get_template(pk)
+        template = self._get_template(request, pk)
         if template is None:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = EmailTemplateSerializer(template, data=request.data)
+        serializer = EmailTemplateSerializer(
+            template, data=request.data, context={"request": request}
+        )
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(owner=request.user)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
-        """Delete an email template."""
-        template = self._get_template(pk)
+        template = self._get_template(request, pk)
         if template is None:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        
+
         template.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -88,20 +86,22 @@ class EmailTemplateDetailView(APIView):
 class ExtractPlaceholdersView(APIView):
     """
     GET /api/templates/:id/extract-placeholders/
-    Extracts and returns all {{placeholder}} names from a template's body.
+    Extracts and returns all {{placeholder}} names from subject + body
+    (same source text as CSV generation).
     """
 
     def get(self, request, pk):
-        """Extract placeholders from the template body."""
         try:
-            template = EmailTemplate.objects.get(pk=pk)
+            template = EmailTemplate.objects.get(pk=pk, owner=request.user)
         except EmailTemplate.DoesNotExist:
             return Response(
                 {"error": "Template not found."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        placeholders = extract_placeholders(template.body)
+        placeholders = extract_placeholders(
+            f"{template.subject} {template.body}"
+        )
 
         return Response(
             {

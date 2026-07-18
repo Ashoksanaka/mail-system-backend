@@ -9,6 +9,10 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Captures placeholder names inside {{...}}; underscore-style identifiers only
+# (letters, digits, underscores). Optional whitespace around the name is allowed.
+PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
 
 def format_email_count(count):
     """Format large email counts for display (e.g., 1.2K, 3.5M)."""
@@ -22,24 +26,19 @@ def format_email_count(count):
 def extract_placeholders(template_body: str) -> list[str]:
     """
     Extract all unique placeholder names from a template body string.
-    Placeholders are denoted by {{placeholder_name}}.
+    Placeholders are denoted by {{placeholder_name}} (underscore-style only).
     Returns a list of unique names in order of first appearance.
-    Strips whitespace from inside the braces.
 
     Example:
-        Input:  "Hello {{name}}, your order {{order_id}} is ready."
-        Output: ["name", "order_id"]
+        Input:  "Hello {{name}}, contact {{Your_Contact_Info}}."
+        Output: ["name", "Your_Contact_Info"]
     """
-    # Find all matches of {{...}} pattern
-    matches = re.findall(r"\{\{(\s*\w+\s*)\}\}", template_body)
+    if not template_body:
+        return []
 
-    # Strip whitespace from each match
-    stripped = [m.strip() for m in matches]
-
-    # Deduplicate while preserving order using dict.fromkeys()
-    unique = list(dict.fromkeys(stripped))
-
-    return unique
+    matches = PLACEHOLDER_PATTERN.findall(template_body)
+    stripped = [m.strip() for m in matches if m and m.strip()]
+    return list(dict.fromkeys(stripped))
 
 
 def generate_csv_content(placeholders: list[str]) -> str:
@@ -62,7 +61,8 @@ def generate_csv_content(placeholders: list[str]) -> str:
 def fill_template(body: str, replacements: dict) -> str:
     """
     Replace all {{placeholder}} occurrences in body with values from
-    the replacements dict.
+    the replacements dict. Tolerates optional spaces around the key
+    inside the braces (e.g. {{ order_id }}).
 
     Example:
         body: "Hi {{name}}, your code is {{code}}"
@@ -75,7 +75,6 @@ def fill_template(body: str, replacements: dict) -> str:
     """
     result = body
 
-    # First, find all placeholders in the body to check for missing ones
     all_placeholders = extract_placeholders(body)
 
     for placeholder in all_placeholders:
@@ -85,8 +84,10 @@ def fill_template(body: str, replacements: dict) -> str:
                 f"but not provided in replacements dict — leaving unreplaced."
             )
 
-    # Replace each provided placeholder with its value
     for key, value in replacements.items():
-        result = result.replace(f"{{{{{key}}}}}", str(value))
+        pattern = re.compile(
+            r"\{\{\s*" + re.escape(str(key)) + r"\s*\}\}"
+        )
+        result = pattern.sub(str(value), result)
 
     return result

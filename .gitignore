@@ -18,6 +18,11 @@ build/
 local_settings.py
 db.sqlite3
 media/
+staticfiles/
+
+# ─── Environment ─────────────────────────────────────
+.env
+!.env.example
 
 # ─── Node ────────────────────────────────────────────
 node_modules/

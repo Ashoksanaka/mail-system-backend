@@ -28,16 +28,19 @@ class DispatchJobSerializer(serializers.ModelSerializer):
             "sent_count",
             "failed_count",
             "status",
+            "error_message",
             "created_at",
             "completed_at",
         ]
         read_only_fields = [
             "id",
+            "template",
             "template_name",
             "total_recipients",
             "sent_count",
             "failed_count",
             "status",
+            "error_message",
             "created_at",
             "completed_at",
         ]

@@ -1,0 +1,138 @@
+name: CI/CD Pipeline
+
+# Build + test on every push/PR, then deploy to the AWS VM
+# only when the pipeline passes on the main branch.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions UI
+
+# Avoid overlapping deploys stepping on each other
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Run the Django test suite ───────────────────────────
+  test:
+    name: Test (Django)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc libpq-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        # Uses SQLite + in-memory channel layer, so no external
+        # services are required (see config/test_settings.py).
+        run: python manage.py test --settings=config.test_settings --verbosity=2
+
+  # ── 2. Validate the Docker image builds ────────────────────
+  build:
+    name: Build Docker image
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: mail-system-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Deploy to the AWS VM ────────────────────────────────
+  # Runs only on main (push or manual), never on pull requests,
+  # and only after tests + image build succeed.
+  deploy:
+    name: Deploy to AWS VM
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Navigate to the project directory on the VM
+            cd ${{ secrets.APP_DIR }}
+
+            # Pull the latest changes from the main branch
+            git fetch origin
+            git reset --hard origin/main
+
+            # Require a real .env with Clerk secrets — never deploy placeholders
+            if [ ! -f .env ]; then
+              echo "ERROR: .env is missing. Provision CLERK_SECRET_KEY and other secrets before deploy."
+              exit 1
+            fi
+            if ! grep -q '^CLERK_SECRET_KEY=sk_' .env; then
+              echo "ERROR: CLERK_SECRET_KEY is missing or still a placeholder in .env"
+              exit 1
+            fi
+
+            # Ensure the external docker network exists before starting containers
+            sudo docker network inspect mail_system_net >/dev/null 2>&1 || sudo docker network create mail_system_net
+
+            # Restart the Docker containers and rebuild the images
+            sudo docker-compose down
+            sudo docker-compose up --build -d
+
+            # Clean up dangling images to save disk space
+            sudo docker system prune -f
+
+            # Verify the public HTTPS endpoint (Caddy TLS) is reachable.
+            # Requires DOMAIN in .env (e.g. 13-60-91-88.nip.io) and
+            # security-group ports 80/443 open (nip.io resolves the IP automatically).
+            DOMAIN="$(grep -E '^DOMAIN=' .env | cut -d= -f2- | tr -d '"' | tr -d "'")"
+            if [ -z "$DOMAIN" ]; then
+              echo "ERROR: DOMAIN is not set in .env (needed for HTTPS health check)"
+              exit 1
+            fi
+            echo "Waiting for https://${DOMAIN}/api/health/ ..."
+            for i in $(seq 1 30); do
+              if curl -fsS --max-time 10 "https://${DOMAIN}/api/health/" | grep -q '"status"'; then
+                echo "HTTPS health check passed"
+                exit 0
+              fi
+              echo "Attempt ${i}/30 failed; retrying in 5s..."
+              sleep 5
+            done
+            echo "ERROR: HTTPS health check failed for https://${DOMAIN}/api/health/"
+            sudo docker-compose ps
+            sudo docker-compose logs --tail=80 caddy backend || true
+            exit 1

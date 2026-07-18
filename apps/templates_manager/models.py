@@ -4,6 +4,7 @@
 # ──────────────────────────────────────────────────────────────
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -18,11 +19,16 @@ class EmailTemplate(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_templates",
+        help_text="Clerk-authenticated user who owns this template",
+    )
     name = models.CharField(
         max_length=255,
-        unique=True,
         db_index=True,
-        help_text="Unique template name",
+        help_text="Template name (unique per owner)",
     )
     subject = models.CharField(
         max_length=255,
@@ -55,6 +61,12 @@ class EmailTemplate(models.Model):
         ordering = ["-created_at"]
         verbose_name = "Email Template"
         verbose_name_plural = "Email Templates"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "name"],
+                name="uniq_emailtemplate_owner_name",
+            ),
+        ]
 
     def __str__(self):
         return self.name

@@ -1,3 +1,11 @@
+# TLS terminator for the AWS VM.
+# DOMAIN comes from docker-compose (e.g. api.bulk-mail-dispatch.com).
+# Caddy obtains a Let's Encrypt certificate and proxies HTTP + WebSockets
+# to Daphne, preserving the original Host and setting X-Forwarded-Proto.
 {$DOMAIN} {
-    reverse_proxy backend:8000
+	encode gzip
+	reverse_proxy backend:8000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
 }

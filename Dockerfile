@@ -22,11 +22,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the backend code
 COPY . .
 
-# Make entrypoint script executable
-RUN chmod +x /app/entrypoint.sh
+# Make entrypoint script executable and run as non-root
+RUN chmod +x /app/entrypoint.sh \
+    && groupadd --gid 1000 appuser \
+    && useradd --uid 1000 --gid 1000 --create-home appuser \
+    && chown -R appuser:appuser /app
 
 # Expose the backend port
 EXPOSE 8000
+
+USER appuser
 
 # Default command — Daphne ASGI server (not Gunicorn)
 # Daphne is required because Django Channels needs an ASGI server

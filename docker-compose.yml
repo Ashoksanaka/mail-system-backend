@@ -1,6 +1,6 @@
 # ──────────────────────────────────────────────────────────────
 # Docker Compose — Bulk Email Dispatch Platform (Backend)
-# Services: db, redis, backend, celery
+# Services: db, redis, backend, celery, celery-beat, caddy
 # ──────────────────────────────────────────────────────────────
 
 services:
@@ -12,6 +12,9 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      # Published for host-network Celery (DB_HOST=127.0.0.1)
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +29,9 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    expose:
-      - "6379"
+    ports:
+      # Published for host-network Celery (REDIS_URL=redis://127.0.0.1:6379/0)
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -51,8 +55,8 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     volumes:
       - .:/app
     command: /app/entrypoint.sh
@@ -78,16 +82,20 @@ services:
       - backend
 
   # ── 5. Celery Worker ───────────────────────────────────────
+  # Host networking so outbound Gmail SMTP uses the host stack
+  # (bridge NAT often blocks/breaks SMTP). Talks to db/redis via
+  # published localhost ports below.
   celery:
     build: .
     restart: unless-stopped
+    network_mode: host
     depends_on:
       - backend
       - redis
     env_file: .env
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
+    environment:
+      DB_HOST: 127.0.0.1
+      REDIS_URL: redis://127.0.0.1:6379/0
     volumes:
       - .:/app
     command: celery -A celery_app worker --loglevel=info --concurrency=4
@@ -96,8 +104,23 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    networks:
-      - mail_system_net
+
+  # ── 6. Celery Beat (periodic tasks) ────────────────────────
+  celery-beat:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - backend
+      - redis
+      - celery
+    env_file: .env
+    environment:
+      DB_HOST: 127.0.0.1
+      REDIS_URL: redis://127.0.0.1:6379/0
+    volumes:
+      - .:/app
+    command: celery -A celery_app beat --loglevel=info
 
 # ── Named Volumes ────────────────────────────────────────────
 volumes:
