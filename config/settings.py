@@ -100,6 +100,7 @@ INSTALLED_APPS = [
 # ─── Middleware ───────────────────────────────────────────────
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",  # Must be as high as possible
+    "apps.core.cors_debug.CorsDebugMiddleware",  # debug session 262c30
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
