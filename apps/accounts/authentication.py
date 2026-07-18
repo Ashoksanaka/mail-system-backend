@@ -1,6 +1,4 @@
-# ──────────────────────────────────────────────────────────────
-# DRF authentication — Clerk session tokens
-# ──────────────────────────────────────────────────────────────
+from django.conf import settings
 from rest_framework import authentication, exceptions
 
 from .clerk import verify_clerk_request
@@ -29,6 +27,33 @@ class ClerkAuthentication(authentication.BaseAuthentication):
                 return None
             reason = getattr(state, "reason", None)
             detail = getattr(reason, "value", None) or getattr(reason, "name", None) or "Invalid Clerk session token."
+            # #region agent log
+            import json
+            import time
+
+            print(
+                "[agent-auth-debug] "
+                + json.dumps(
+                    {
+                        "sessionId": "262c30",
+                        "runId": "auth-1",
+                        "hypothesisId": "F",
+                        "location": "ClerkAuthentication.authenticate",
+                        "message": "Clerk token rejected",
+                        "data": {
+                            "detail": str(detail),
+                            "origin": request.META.get("HTTP_ORIGIN"),
+                            "has_bearer": auth_header.lower().startswith("bearer "),
+                            "authorized_parties": list(
+                                getattr(settings, "CLERK_AUTHORIZED_PARTIES", []) or []
+                            ),
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                ),
+                flush=True,
+            )
+            # #endregion
             raise exceptions.AuthenticationFailed(detail)
 
         try:
